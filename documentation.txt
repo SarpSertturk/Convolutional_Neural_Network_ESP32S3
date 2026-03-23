@@ -1,0 +1,122 @@
+Rock-Paper-Scissors CNN on ESP32-S3
+====================================
+Sarp Sertturk (ss4476)
+
+
+SYSTEM OVERVIEW
+---------------
+The system captures a live 160x120 grayscale image from the OV2640 camera
+on an ESP32-S3 board, downsamples it to 32x32, and classifies it as rock,
+paper, or scissors using a convolutional neural network (CNN) implemented
+entirely in MicroPython — no TFLite or ulab library is used.
+
+The workflow has three stages:
+
+  1. Data collection
+     The ESP32 streams raw grayscale frames over Wi-Fi (TCP) to a laptop.
+     The laptop displays the stream and saves labelled images when the user
+     presses R, P, or S. Images are saved using the same nearest-neighbour
+     downsampling formula that the ESP32 uses at inference time, so training
+     data and inference conditions match exactly.
+
+  2. Training (laptop)
+     train_cnn.py trains the CNN on the collected dataset (1 053 images:
+     ~303 rock, ~386 paper, ~364 scissors). Weights are exported as flat
+     binary float32 files by export_weights.py and uploaded to the ESP32.
+
+  3. Real-time inference (ESP32)
+     esp_realtime.py loads the weight files, captures a frame, preprocesses
+     it, runs the full CNN forward pass in MicroPython, and prints the
+     predicted class and confidence to the serial console.
+
+
+CNN ARCHITECTURE
+----------------
+The model is defined in train_cnn.py.
+
+  Layer                       Output shape     Parameters
+  ---------------------------------------------------------
+  Input                       32 x 32 x 1
+  Conv2D(16, 3x3, relu, same) 32 x 32 x 16     160
+  MaxPooling2D(2x2)           16 x 16 x 16       0
+  Conv2D(32, 3x3, relu, same) 16 x 16 x 32    4 640
+  MaxPooling2D(2x2)            8 x  8 x 32       0
+  Conv2D(64, 3x3, relu, same)  8 x  8 x 64   18 496
+  GlobalAveragePooling2D              64          0
+  Dense(64, relu)                     64      4 160
+  Dropout(0.4)                        64          0
+  Dense(3, softmax)                    3        195
+  ---------------------------------------------------------
+  Total trainable parameters:                 27 651
+
+GlobalAveragePooling2D is used instead of Flatten so the weight count
+stays small enough to fit in the ESP32's RAM (all weights total ~110 KB).
+
+Data augmentation (rotation ±15°, shift ±10%, horizontal flip) was applied
+during training to improve generalisation to different hand positions and
+lighting conditions. Dropout(0.4) was added to reduce over-fitting.
+
+Final validation accuracy: 98.1 %
+
+
+PREPROCESSING PIPELINE
+-----------------------
+Both the training data saver (laptop_client.py) and the ESP32 inference
+code (esp_realtime.py) use the same nearest-neighbour sampling formula:
+
+  for dy in 0..31:
+      sy = int(dy * 120 / 32)
+      for dx in 0..31:
+          sx = int(dx * 160 / 32)
+          pixel = frame[sy * 160 + sx] / 255.0
+
+The & 0xFF mask is applied on the ESP32 to handle MicroPython's signed-byte
+indexing of raw bytes objects. Matching the preprocessing exactly between
+training and inference was critical for accuracy.
+
+After each inference (~30 s on the ESP32), 60 warm-up frames are captured
+and discarded to let the camera's auto-exposure algorithm re-stabilise
+before the classification frame is taken.
+
+
+POSSIBLE IMPROVEMENTS
+---------------------
+1. Quantisation — converting weights from float32 to int8 would reduce
+   memory usage by 4x and speed up inference significantly on the ESP32.
+
+2. Faster inference — the current pure-Python conv2d is slow (~30 s per
+   frame). Using MicroPython's array module or a ulab-enabled firmware
+   would bring this down to under 1 second.
+
+3. Continuous classification — with faster inference the warm-up flush
+   would become unnecessary, enabling true real-time classification at
+   several frames per second.
+
+4. Larger / more balanced dataset — collecting equal numbers of images per
+   class under varied lighting and backgrounds would improve robustness.
+
+5. Colour input — using an RGB or YCbCr frame instead of grayscale could
+   give the model additional discriminating features.
+
+6. On-device display — outputting the result to an OLED or TFT display
+   attached to the ESP32 would make the device fully standalone.
+
+
+FILE STRUCTURE
+--------------
+rps_project/
+  esp32/
+    streaming_server.py   Wi-Fi + TCP camera streaming server (ESP32)
+    esp_classify.py       Classify a stored test image (ESP32, Week 2)
+    esp_realtime.py       Live camera classification (ESP32, Week 3)
+  laptop/
+    laptop_client.py      Live viewer + dataset collection tool
+    train_cnn.py          CNN training script
+    export_weights.py     Export Keras weights as binary float32 files
+    prepare_test_image.py Convert a PNG to raw bytes for ESP32 testing
+  weights/                Binary float32 weight files (uploaded to ESP32)
+  dataset/                Labelled training images
+    rock/       (~303 PNG images, 32x32 grayscale)
+    paper/      (~386 PNG images, 32x32 grayscale)
+    scissors/   (~364 PNG images, 32x32 grayscale)
+  documentation.txt       This file
