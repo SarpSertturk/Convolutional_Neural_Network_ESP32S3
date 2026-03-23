@@ -1,0 +1,1 @@
+CITATION: In this assignment, I used Claude Code on VS Code for the MCP server deployment and checking whether I'm addressing the requirements or not.
